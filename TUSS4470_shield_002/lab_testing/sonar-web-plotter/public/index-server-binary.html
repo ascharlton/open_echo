@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Open Echo Seafloor Profile Plot</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+    <style>
+        /* ... (CSS remains the same) ... */
+        body { font-family: sans-serif; background-color: #212121; color: #ffffff; display: flex; justify-content: center; align-items: flex-start; padding-top: 20px; }
+        .container { width: 95%; max-width: 1280px; }
+        .info-panel { display: flex; justify-content: space-around; background-color: #2b2b2b; padding: 10px; border-radius: 8px; margin-bottom: 20px; }
+        .info-item { padding: 0 10px; }
+        #seafloor-chart { background-color: #000000; border-radius: 8px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Real-Time Seafloor Distance Profile</h1>
+
+        <div class="info-panel">
+            <div class="info-item">Current Distance: <span id="distance-output">N/A</span> cm</div>
+            <div class="info-item">Peak Value: <span id="peak-output">N/A</span></div>
+            <div class="info-item" id="status-el">Status: Connecting...</div>
+        </div>
+
+        <canvas id="seafloor-chart" width="800" height="480"></canvas>
+    </div>
+
+    <script>
+        const HISTORY_LENGTH = 200; // Maximum number of data points (frames) to keep in the plot
+        const distanceHistory = []; 
+        
+        // **NEW:** The labels will be fixed from 0 to HISTORY_LENGTH - 1 (0 to 199)
+        const labelHistory = Array.from({ length: HISTORY_LENGTH }, (_, i) => i);
+
+        const distanceEl = document.getElementById('distance-output');
+        const peakEl = document.getElementById('peak-output');
+        const statusEl = document.getElementById('status-el');
+
+        // Initialize distanceHistory with placeholder zeros to fill the chart initially
+        for(let i=0; i < HISTORY_LENGTH; i++) {
+            distanceHistory.push(0);
+        }
+
+        // --- Chart Setup (Line Chart) ---
+        const ctx = document.getElementById('seafloor-chart').getContext('2d');
+        const chart = new Chart(ctx, {
+            type: 'line', 
+            data: {
+                // **UPDATED:** Use the static labelHistory array
+                labels: labelHistory,
+                datasets: [{
+                    label: 'Seafloor Distance',
+                    data: distanceHistory,
+                    borderColor: 'rgb(75, 192, 192)',
+                    tension: 0.1, 
+                    pointRadius: 0, 
+                    fill: false
+                }]
+            },
+            options: {
+                responsive: false, 
+                maintainAspectRatio: false,
+                plugins: { legend: { display: false } },
+                scales: {
+                    x: {
+                        type: 'linear', 
+                        title: { display: true, text: 'Time (Frames)' },
+                        // **UPDATED:** Set fixed min/max for the X-axis
+                        min: 0, 
+                        max: HISTORY_LENGTH - 1,
+                        ticks: {
+                            callback: function(value) {
+                                return value % 20 === 0 ? value : '';
+                            }
+                        }
+                    },
+                    y: {
+                        title: { display: true, text: 'Distance (cm)' },
+                        reverse: true, 
+                        min: 0,
+                        max: 200 
+                    }
+                },
+                animation: false 
+            }
+        });
+
+        // --- WebSocket Client ---
+        const ws = new WebSocket(`ws://${location.hostname}:3000`);
+
+        ws.onopen = () => {
+            statusEl.textContent = 'Status: Connected';
+            console.log('WebSocket connected.');
+        };
+
+// !!! IMPORTANT: Tell the WebSocket to send binary data as an ArrayBuffer
+        ws.binaryType = 'arraybuffer'; 
+
+        ws.onopen = () => {
+            // ...
+        };
+
+        ws.onmessage = (event) => {
+            try {
+                // 1. Get the ArrayBuffer (the 5-byte packet)
+                const arrayBuffer = event.data;
+                
+                // 2. Use DataView to read values from the raw binary data
+                const dataView = new DataView(arrayBuffer);
+                
+                // Read 5 bytes:
+                // Byte 0-1: Distance (UInt16BE) -> convert back to cm
+                const distMM = dataView.getUint16(0, false); // false = Big Endian
+                const distance = distMM / 10.0; // Convert mm back to cm
+                console.log('WebSocket distance:', distance);
+                
+                // Byte 2: Peak Value (UInt8)
+                const peakValue = dataView.getUint8(2); 
+                
+                // Byte 3-4: Peak Index (UInt16BE)
+                const peakIndex = dataView.getUint16(3, false); // false = Big Endian
+                
+                // 3. Update info panel
+                distanceEl.textContent = distance.toFixed(2);
+                peakEl.textContent = peakValue; // Display the raw 8-bit value
+                statusEl.textContent = 'Status: Streaming Data';
+
+                // 4. Update the scrolling history arrays
+                distanceHistory.shift(); 
+                distanceHistory.push(distance);
+
+                // 5. Update the Chart
+                chart.update('none'); 
+                
+            } catch (e) {
+                console.error('Client-side data processing failed:', e);
+                statusEl.textContent = 'Status: Processing Error';
+            }
+        };
+    </script>
+</body>
+</html>

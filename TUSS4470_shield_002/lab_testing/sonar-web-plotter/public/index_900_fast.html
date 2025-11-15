@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Open Echo Node.js Plot</title>
+    <!-- Use Tailwind CSS for better styling and responsiveness -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* Apply Inter font */
+        body { font-family: 'Inter', sans-serif; }
+        /* Chart container styling for the low-level Canvas implementation */
+        .chart-container {
+            width: 100%;
+            max-width: 800px;
+            margin: auto;
+            background-color: #000000;
+            border-radius: 12px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+            padding: 16px;
+        }
+        /* Ensure the Canvas element scales responsively */
+        #waterfall-canvas {
+            width: 100%;
+            height: auto; 
+            image-rendering: crisp-edges; /* Helps keep the heatmap pixels sharp */
+        }
+    </style>
+</head>
+<body class="bg-gray-900 text-white flex justify-center items-start min-h-screen p-4">
+    <div class="container w-full max-w-7xl">
+        <h1 class="text-3xl font-bold mb-4 text-center">Real-Time Sonar Waterfall Plot (Optimized)</h1>
+        
+        <div class="info-panel flex justify-around bg-gray-800 p-3 rounded-xl shadow-lg mb-6 text-sm flex-wrap space-y-2 sm:space-y-0">
+            <div id="status" class="bg-blue-600 px-3 py-1 rounded-full">Status: Connecting...</div>
+            <div id="depth-info" class="px-3 py-1">Depth: --- cm</div>
+            <div id="temp-info" class="px-3 py-1">Temp: --- °C</div>
+            <div id="vdrv-info" class="px-3 py-1">Vdrv: --- V</div>
+            <div id="res-info" class="px-3 py-1">Resolution: 10 bits</div>
+        </div>
+
+        <div class="chart-container">
+            <!-- Canvas is now set to its exact pixel resolution for the putImageData method -->
+            <canvas id="waterfall-canvas" width="400" height="225"></canvas>
+        </div>
+        
+        <div class="mt-6 text-center text-sm text-gray-400">
+            <p>Data Range: 0 (Min) to 1023 (Max). Plotting <span id="num-samples-display">225</span> samples per frame.</p>
+            <p>Display Max (Contrast): <span id="max-display">400</span></p>
+        </div>
+    </div>
+
+    <script>
+        // --- CONSTANTS ---
+        const PLOT_WIDTH = 20; // X-axis resolution (number of history columns)
+        const DECIMATED_SAMPLES = 225; // Y-axis resolution (900 / 4)
+        const MAX_ADC_VALUE = 1023; // Maximum possible value from a 10-bit ADC
+        
+        let MAX_DISPLAY_VALUE = 200; 
+        const dataHistory = []; 
+        
+        // References for DOM elements
+        const statusEl = document.getElementById('status');
+        const depthEl = document.getElementById('depth-info');
+        const tempEl = document.getElementById('temp-info');
+        const vdrvEl = document.getElementById('vdrv-info');
+        const maxDisplayEl = document.getElementById('max-display');
+        document.getElementById('num-samples-display').textContent = DECIMATED_SAMPLES;
+
+        // --- CANVAS SETUP ---
+        const canvas = document.getElementById('waterfall-canvas');
+        const ctx = canvas.getContext('2d');
+        // Create an ImageData object once for reuse. It holds the raw pixel data.
+        const imageData = ctx.createImageData(PLOT_WIDTH, DECIMATED_SAMPLES);
+        const dataArray = imageData.data; // This is the 1D array of [R, G, B, A] values
+
+        // --- HELPER: Decimate (Downsample) the data ---
+        function downsampleSamples(samples, targetCount) {
+            if (samples.length === targetCount) return samples;
+            
+            const step = samples.length / targetCount;
+            const decimated = [];
+            
+            for (let i = 0; i < targetCount; i++) {
+                const index = Math.min(Math.round(i * step), samples.length - 1); 
+                decimated.push(samples[index]);
+            }
+            return decimated;
+        }
+
+        // --- OPTIMIZED RENDERING LOOP (using putImageData) ---
+        function renderWaterfall() {
+            const historyLength = dataHistory.length;
+            
+            // Loop through every pixel (x, y) on the canvas
+            for (let x = 0; x < PLOT_WIDTH; x++) {
+                const samples = dataHistory[x] || [];
+                
+                // If we don't have enough history, draw black
+                if (x >= historyLength) {
+                    for (let y = 0; y < DECIMATED_SAMPLES; y++) {
+                         // Index calculation for the 1D dataArray: (y * width + x) * 4
+                        const pixelIndex = (y * PLOT_WIDTH + x) * 4;
+                        dataArray[pixelIndex] = 0;   // R
+                        dataArray[pixelIndex + 1] = 0; // G
+                        dataArray[pixelIndex + 2] = 0; // B
+                        dataArray[pixelIndex + 3] = 255; // A (full opacity)
+                    }
+                    continue;
+                }
+
+                // Iterate through the vertical samples (Y-axis)
+                for (let y = 0; y < DECIMATED_SAMPLES; y++) {
+                    const rawValue = samples[y] || 0;
+                    
+                    // SCALING: Map rawValue to 0-1 ratio based on MAX_DISPLAY_VALUE
+                    const ratio = Math.min(rawValue / MAX_DISPLAY_VALUE, 1); 
+                    const intensity = Math.round(255 * ratio); 
+                    
+                    // Index calculation for the 1D dataArray: (y * width + x) * 4
+                    const pixelIndex = (y * PLOT_WIDTH + x) * 4;
+
+                    // COLOR ASSIGNMENT (Red Gradient: R=Intensity, G=10, B=10)
+                    dataArray[pixelIndex] = intensity;   // Red component
+                    dataArray[pixelIndex + 1] = 10;      // Green component
+                    dataArray[pixelIndex + 2] = 10;      // Blue component
+                    dataArray[pixelIndex + 3] = 255;     // Alpha component (Opaque)
+                }
+            }
+
+            // Push the entire pixel array to the canvas in a single operation
+            ctx.putImageData(imageData, 0, 0);
+
+            // Request the next frame to keep the visualization running smoothly
+            requestAnimationFrame(renderWaterfall);
+        }
+
+        // Start the continuous rendering loop
+        renderWaterfall();
+
+        // Optional: Allow the user to adjust the MAX_DISPLAY_VALUE (contrast) in the console
+        window.setContrast = (newMax) => {
+            if (newMax > 0 && newMax <= MAX_ADC_VALUE) {
+                MAX_DISPLAY_VALUE = newMax;
+                maxDisplayEl.textContent = newMax;
+                console.log(`Contrast set: MAX_DISPLAY_VALUE = ${newMax}`);
+            } else {
+                console.error(`Invalid contrast value. Must be between 1 and ${MAX_ADC_VALUE}.`);
+            }
+        };
+
+
+        // --- WebSocket Client ---
+        const ws = new WebSocket(`ws://${location.hostname}:3000`);
+
+        ws.onopen = () => {
+            statusEl.className = 'bg-green-600 px-3 py-1 rounded-full';
+            statusEl.textContent = 'Status: Connected';
+            console.log('WebSocket connected.');
+        };
+
+        // When data arrives, we *only* process it and update the history. 
+        // Rendering is handled by the requestAnimationFrame loop.
+        ws.onmessage = (event) => {
+            try {
+                const data = JSON.parse(event.data);
+                console.log("incoming data:",data);
+                
+                // 1. Update Info Panel
+                depthEl.textContent = `Depth: ${data.depth} cm`;
+                tempEl.textContent = `Temp: ${data.temperature} °C`;
+                vdrvEl.textContent = `Vdrv: ${data.driveVoltage} V`;
+
+                // 2. Downsample and Add new sample column to history
+                const decimatedSamples = downsampleSamples(data.samples, DECIMATED_SAMPLES);
+                dataHistory.push(decimatedSamples);
+                
+                if (dataHistory.length > PLOT_WIDTH) {
+                    // Shift the history to the left (removing the oldest column)
+                    dataHistory.shift(); 
+                }
+
+                // 3. Update status
+                if (statusEl.textContent === 'Status: Connecting...') {
+                    statusEl.className = 'bg-blue-600 px-3 py-1 rounded-full';
+                    statusEl.textContent = 'Status: Streaming Data';
+                }
+
+            } catch (e) {
+                console.error('Client-side data processing failed:', e);
+                statusEl.className = 'bg-red-600 px-3 py-1 rounded-full';
+                statusEl.textContent = 'Status: Processing Error';
+            }
+        };
+
+        ws.onclose = () => {
+            statusEl.className = 'bg-gray-600 px-3 py-1 rounded-full';
+            statusEl.textContent = 'Status: Disconnected';
+        }
+        
+    </script>
+</body>
+</html>
+

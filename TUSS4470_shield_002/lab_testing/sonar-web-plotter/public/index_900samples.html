@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Open Echo Node.js Plot</title>
+    <!-- Use Tailwind CSS for better styling and responsiveness -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-chart-matrix@2.0.0/dist/chartjs-chart-matrix.js"></script>
+    <style>
+        /* Apply Inter font */
+        body { font-family: 'Inter', sans-serif; }
+        /* Ensure the canvas container has a specific size for non-responsive chart */
+        .chart-container {
+            width: 100%;
+            max-width: 800px;
+            margin: auto;
+            background-color: #000000;
+            border-radius: 12px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+            padding: 16px;
+        }
+    </style>
+</head>
+<body class="bg-gray-900 text-white flex justify-center items-start min-h-screen p-4">
+    <div class="container w-full max-w-7xl">
+        <h1 class="text-3xl font-bold mb-4 text-center">Real-Time Sonar Waterfall Plot</h1>
+        
+        <div class="info-panel flex justify-around bg-gray-800 p-3 rounded-xl shadow-lg mb-6 text-sm flex-wrap space-y-2 sm:space-y-0">
+            <div id="status" class="bg-blue-600 px-3 py-1 rounded-full">Status: Connecting...</div>
+            <div id="depth-info" class="px-3 py-1">Depth: --- cm</div>
+            <div id="temp-info" class="px-3 py-1">Temp: --- °C</div>
+            <div id="vdrv-info" class="px-3 py-1">Vdrv: --- V</div>
+            <div id="res-info" class="px-3 py-1">Resolution: 10 bits</div>
+        </div>
+
+        <div class="chart-container">
+            <canvas id="waterfall-chart" width="800" height="900"></canvas>
+        </div>
+        
+        <div class="mt-6 text-center text-sm text-gray-400">
+            <p>Data Range: 0 (Min) to 1023 (Max)</p>
+            <p>Display Max: <span id="max-display">600</span> (Adjust this value to change plot contrast)</p>
+        </div>
+    </div>
+
+    <script>
+        // --- CONSTANTS ---
+        const PLOT_WIDTH = 400; // Number of history columns (X-axis)
+        const NUM_SAMPLES = 900; // Y-axis resolution (your current working sample count)
+        const MAX_ADC_VALUE = 1023; // Maximum possible value from a 10-bit ADC
+        
+        // Initial contrast reference based on your max measured value (588).
+        // We use this value to calculate the color intensity, providing better contrast.
+        let MAX_DISPLAY_VALUE = 600; 
+
+        const dataHistory = []; 
+
+        // --- Chart Setup (using Matrix Chart for Heatmap effect) ---
+        const ctx = document.getElementById('waterfall-chart').getContext('2d');
+        const chart = new Chart(ctx, {
+            type: 'matrix',
+            data: {
+                datasets: [{
+                    label: 'Sonar Data',
+                    data: [], // Will be populated with {x, y, v} objects
+                    backgroundColor(context) {
+                        const dataPoint = context.dataset.data[context.dataIndex];
+                        if (!dataPoint) {
+                            return 'rgb(0, 0, 0)'; 
+                        }
+                        
+                        const rawValue = dataPoint.v;
+
+                        // 1. SCALING FIX: Map rawValue (up to 1023) to an intensity scale (up to 255).
+                        // The scale is based on the dynamically set MAX_DISPLAY_VALUE, 
+                        // not the ADC maximum (1023), for better visual contrast.
+                        const ratio = Math.min(rawValue / MAX_DISPLAY_VALUE, 1); 
+
+                        // 2. Map ratio to 8-bit color intensity (0-255)
+                        const intensity = Math.round(255 * ratio); 
+                        
+                        // Use a red gradient (adjust the green/blue components to change the color scheme)
+                        // Example: `rgb(${intensity}, 0, 0)` for pure red/black
+                        return `rgb(${intensity}, 10, 10)`; 
+                    },
+                    
+                    // Fixed width and height calculation based on new constants
+                    width: (context) => {
+                        if (!context.chart.chartArea) return 0;
+                        return context.chart.chartArea.width / PLOT_WIDTH;
+                    },
+                    height: (context) => {
+                        if (!context.chart.chartArea) return 0;
+                        return context.chart.chartArea.height / NUM_SAMPLES;
+                    },
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: { legend: { display: false } },
+                scales: {
+                    x: { 
+                        type: 'linear', 
+                        min: 0, 
+                        max: PLOT_WIDTH, 
+                        title: { display: true, text: 'Time (Frames)' },
+                        grid: { display: false }
+                    },
+                    y: { 
+                        type: 'linear', 
+                        min: 0, 
+                        max: NUM_SAMPLES, 
+                        reverse: true, 
+                        title: { display: true, text: 'Sample Index (Depth)' },
+                        grid: { color: 'rgba(255, 255, 255, 0.1)' }
+                    }
+                }
+            }
+        });
+
+        // --- WebSocket Client ---
+        const ws = new WebSocket(`ws://${location.hostname}:3000`);
+        const statusEl = document.getElementById('status');
+        const depthEl = document.getElementById('depth-info');
+        const tempEl = document.getElementById('temp-info');
+        const vdrvEl = document.getElementById('vdrv-info');
+        const resEl = document.getElementById('res-info');
+        const maxDisplayEl = document.getElementById('max-display');
+
+        // Optional: Allow the user to adjust the MAX_DISPLAY_VALUE (contrast) in the console
+        // This is a powerful way to debug or fine-tune the visualization.
+        window.setContrast = (newMax) => {
+            if (newMax > 0 && newMax <= MAX_ADC_VALUE) {
+                MAX_DISPLAY_VALUE = newMax;
+                maxDisplayEl.textContent = newMax;
+                // Force a full redraw of the current data with the new color scale
+                chart.update('none'); 
+                console.log(`Contrast set: MAX_DISPLAY_VALUE = ${newMax}`);
+            } else {
+                console.error(`Invalid contrast value. Must be between 1 and ${MAX_ADC_VALUE}.`);
+            }
+        };
+
+
+        ws.onopen = () => {
+            statusEl.className = 'bg-green-600 px-3 py-1 rounded-full';
+            statusEl.textContent = 'Status: Connected';
+            console.log('WebSocket connected.');
+        };
+
+        ws.onmessage = (event) => {
+            try {
+                const data = JSON.parse(event.data);
+                
+                // 1. Update Info Panel
+                depthEl.textContent = `Depth: ${data.depth} cm`;
+                tempEl.textContent = `Temp: ${data.temperature} °C`;
+                vdrvEl.textContent = `Vdrv: ${data.driveVoltage} V`;
+
+                // 2. Add new sample column to history
+                dataHistory.push(data.samples);
+                if (dataHistory.length > PLOT_WIDTH) {
+                    dataHistory.shift(); // Remove oldest column
+                }
+
+                // 3. Prepare data for the Matrix Chart
+                const chartData = [];
+                const currentHistoryLength = dataHistory.length;
+                
+                // Iterate over history (X-axis) - i is the time index (0 is oldest, end is newest)
+                for (let i = 0; i < currentHistoryLength; i++) {
+                    const samples = dataHistory[i];
+                    
+                    // Iterate over samples (Y-axis) - j is the depth index
+                    for (let j = 0; j < samples.length; j++) {
+                        
+                        chartData.push({
+                            x: i, 
+                            y: j,
+                            v: samples[j] // Raw 10-bit value
+                        });
+                    }
+                }
+
+                // 4. Update the Chart
+                chart.data.datasets[0].data = chartData;
+                chart.update('none'); 
+                
+                // 5. Update status
+                if (statusEl.textContent === 'Status: Connecting...') {
+                    statusEl.className = 'bg-blue-600 px-3 py-1 rounded-full';
+                    statusEl.textContent = 'Status: Streaming Data';
+                }
+
+            } catch (e) {
+                console.error('Client-side data processing failed:', e);
+                statusEl.className = 'bg-red-600 px-3 py-1 rounded-full';
+                statusEl.textContent = 'Status: Processing Error';
+            }
+        };
+
+        ws.onclose = () => {
+            statusEl.className = 'bg-gray-600 px-3 py-1 rounded-full';
+            statusEl.textContent = 'Status: Disconnected';
+        }
+        
+    </script>
+</body>
+</html>

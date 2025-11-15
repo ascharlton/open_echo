@@ -1,0 +1,12 @@
+{
+  "name": "sonar-data-logger",
+  "version": "1.0.0",
+  "description": "Node.js serial console for the Open Echo Sonar project, with signal tracking.",
+  "main": "sonar_console.js",
+  "dependencies": {
+    "serialport": "^12.0.0",
+    "commander": "^12.0.0"
+  }
+}
+
+

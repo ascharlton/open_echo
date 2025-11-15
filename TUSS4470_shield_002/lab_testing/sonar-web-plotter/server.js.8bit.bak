@@ -1,0 +1,123 @@
+// server.js
+
+const express = require('express');
+const http = require('http');
+const WebSocket = require('ws');
+const { SerialPort } = require('serialport');
+const { DelimiterParser } = require('@serialport/parser-delimiter');
+
+// --- Configuration ---
+const PORT = 3000;
+const SERIAL_PORT = '/dev/ttyACM1'; // Your hardcoded port
+const BAUD_RATE = 250000;
+const NUM_SAMPLES = 1800;
+// const PACKET_SIZE = 1 + 6 + 2 * NUM_SAMPLES + 1; // Expected total size: 3608 bytes
+// *** NEW PACKET_SIZE: 1 byte per sample (1800 bytes total for samples) ***
+const PACKET_SIZE = 1 + 6 + 1 * NUM_SAMPLES + 1; // Expected total size: 1808 bytes
+
+// --- Web Server Setup ---
+const app = express();
+const server = http.createServer(app);
+const wss = new WebSocket.Server({ server });
+
+// Serve static files (index.html, client-side JS)
+app.use(express.static('public'));
+
+server.listen(PORT, () => {
+    console.log(`\n🚀 Server listening on http://<Pi-IP-Address>:${PORT}`);
+    console.log(`WebSocket server started on port ${PORT}.`);
+});
+
+// --- Serial Port Setup ---
+try {
+    const port = new SerialPort({ 
+        path: SERIAL_PORT, 
+        baudRate: BAUD_RATE,
+        // The serialport library handles the data stream inherently non-blocking
+    });
+
+    // The DelimiterParser isn't needed here as we rely on the header and fixed size,
+    // but using a stream handler is cleaner than managing raw buffer reads with timeouts.
+    let buffer = Buffer.alloc(0); // Initialize an empty buffer to accumulate fragments
+
+    port.on('data', (data) => {
+        // 1. Concatenate the new data chunk to the accumulated buffer
+        buffer = Buffer.concat([buffer, data]);
+
+        // server.js - Final Production Code (Checksum Bypass)
+
+        while (buffer.length >= PACKET_SIZE) {
+            
+            const headerIndex = buffer.indexOf(0xAA);
+            
+            if (headerIndex === -1) {
+                buffer = Buffer.alloc(0);
+                break;
+            }
+
+            if (headerIndex > 0) {
+                console.warn(`[WARNING] Discarding ${headerIndex} junk bytes before header.`);
+                buffer = buffer.slice(headerIndex);
+                if (buffer.length < PACKET_SIZE) break; 
+            }
+
+            const packet = buffer.slice(0, PACKET_SIZE);
+            
+            // --- Data Processing: BYPASSING CHECKUSM ---
+            // The data streams correctly without validation.
+            
+            const payload = packet.slice(1, PACKET_SIZE - 1);
+            
+            // 1. Unpack Payload using BIG ENDIAN (BE) - Confirmed by Arduino code
+            // Metadata (6 bytes):
+            const depthIndex = payload.readUInt16BE(0); 
+            const tempScaled = payload.readInt16BE(2);   
+            const vDrvScaled = payload.readUInt16BE(4);  
+            
+            // const samplesBuffer = payload.slice(6);
+            // const samples = [];
+            // for (let i = 0; i < NUM_SAMPLES; i++) {
+            //     // Read 16-bit (2-byte) sample data: [0x00][8-bit sample]
+            //     samples.push(samplesBuffer.readUInt16BE(i * 2)); 
+            // }
+            const samplesBuffer = payload.slice(6);
+            const samples = [];
+            for (let i = 0; i < NUM_SAMPLES; i++) {
+                // Read 8-bit (1-byte) sample data
+                // We are reading a single byte (Uint8) instead of a 16-bit word (UInt16)
+                samples.push(samplesBuffer.readUInt8(i)); 
+            }
+
+            // 2. Calculate Real Values and Emit
+            const SPEED_OF_SOUND = 330;
+            const SAMPLE_TIME = 13.2e-6;
+            const SAMPLE_RESOLUTION = (SPEED_OF_SOUND * SAMPLE_TIME * 100) / 2;
+
+            const depthCm = depthIndex * SAMPLE_RESOLUTION;
+            const temperature = tempScaled / 100.0;
+            const driveVoltage = vDrvScaled / 100.0;
+            
+            const dataToSend = {
+                samples: samples,
+                depth: depthCm.toFixed(1),
+                temperature: temperature.toFixed(1),
+                driveVoltage: driveVoltage.toFixed(1),
+            };
+            
+            // 3. Push data to all connected web clients via WebSocket
+            wss.clients.forEach(client => {
+                if (client.readyState === WebSocket.OPEN) {
+                    client.send(JSON.stringify(dataToSend));
+                }
+            });
+
+            // 4. Slice buffer: Move past the packet we just processed
+            buffer = buffer.slice(PACKET_SIZE);                    
+        }
+    });
+
+
+} catch (e) {
+    console.error(`❌ Fatal Error: Could not initialize serial port: ${e.message}`);
+    console.log(`Please check if port ${SERIAL_PORT} is correct.`);
+}

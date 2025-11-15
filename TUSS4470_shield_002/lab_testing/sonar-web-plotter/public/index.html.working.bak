@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Open Echo Node.js Plot</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-chart-matrix@2.0.0/dist/chartjs-chart-matrix.js"></script>
+    <style>
+        body { font-family: sans-serif; background-color: #212121; color: #ffffff; display: flex; justify-content: center; align-items: flex-start; padding-top: 20px; }
+        .container { width: 95%; max-width: 1280px; }
+        .info-panel { display: flex; justify-content: space-around; background-color: #2b2b2b; padding: 10px; border-radius: 8px; margin-bottom: 20px; }
+        .info-item { padding: 0 10px; }
+        #waterfall-chart { background-color: #000000; border-radius: 8px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Real-Time Sonar Waterfall Plot</h1>
+        
+        <div class="info-panel">
+            <div id="status">Status: Connecting...</div>
+            <div id="depth-info">Depth: --- cm</div>
+            <div id="temp-info">Temp: --- °C</div>
+            <div id="vdrv-info">Vdrv: --- V</div>
+        </div>
+
+        <canvas id="waterfall-chart" width="1280" height="780"></canvas>
+    </div>
+
+    <script>
+        const PLOT_WIDTH = 1280; // Number of history columns
+        const NUM_SAMPLES = 1800; // Y-axis resolution (your sample count)
+        const MAX_VALUE = 150; // Max value for color scale
+        const dataHistory = []; // Array to store PLOT_WIDTH samples
+
+        // --- Chart Setup (using Matrix Chart for Heatmap effect) ---
+        const ctx = document.getElementById('waterfall-chart').getContext('2d');
+        const chart = new Chart(ctx, {
+            type: 'matrix',
+            data: {
+                datasets: [{
+                    label: 'Sonar Data',
+                    data: [], // Will be populated with {x, y, v} objects
+                    backgroundColor(context) {
+                        // Safety check for color rendering
+                        const dataPoint = context.dataset.data[context.dataIndex];
+                        if (!dataPoint) {
+                            return 'rgb(0, 0, 0)'; 
+                        }
+                        
+                        const value = dataPoint.v;
+                        const ratio = Math.min(value / MAX_VALUE, 1);
+                        const r = Math.round(255 * ratio); 
+                        const b = 10;
+                        return `rgb(${r}, 10, 10)`; 
+                    },
+                    
+                    // *** FIX APPLIED TO WIDTH AND HEIGHT ***
+                    width: (context) => {
+                        // Check if chartArea exists before reading width
+                        if (!context.chart.chartArea) return 0;
+                        return context.chart.chartArea.width / PLOT_WIDTH;
+                    },
+                    height: (context) => {
+                        // Check if chartArea exists before reading height
+                        if (!context.chart.chartArea) return 0;
+                        return context.chart.chartArea.height / NUM_SAMPLES;
+                    },
+                    // *** END FIX ***
+                }]
+            },
+            options: {
+                responsive: false, // Maintain fixed size
+                maintainAspectRatio: false,
+                plugins: { legend: { display: false } },
+                scales: {
+                    x: { type: 'linear', min: 0, max: PLOT_WIDTH, title: { display: true, text: 'Time (Frames)' } },
+                    y: { type: 'linear', min: 0, max: NUM_SAMPLES, reverse: true, title: { display: true, text: 'Sample Index (Depth)' } }
+                }
+            }
+        });
+
+
+        // --- WebSocket Client ---
+        const ws = new WebSocket(`ws://${location.hostname}:3000`);
+        const statusEl = document.getElementById('status');
+        const depthEl = document.getElementById('depth-info');
+        const tempEl = document.getElementById('temp-info');
+        const vdrvEl = document.getElementById('vdrv-info');
+
+
+        ws.onopen = () => {
+            statusEl.textContent = 'Status: Connected';
+            console.log('WebSocket connected.');
+        };
+
+        ws.onmessage = (event) => {
+            try {
+                const data = JSON.parse(event.data);
+                
+                // 1. Update Info Panel
+                depthEl.textContent = `Depth: ${data.depth} cm`;
+                tempEl.textContent = `Temp: ${data.temperature} °C`;
+                vdrvEl.textContent = `Vdrv: ${data.driveVoltage} V`;
+
+                // 2. Add new sample column to history
+                dataHistory.push(data.samples);
+                if (dataHistory.length > PLOT_WIDTH) {
+                    dataHistory.shift(); // Remove oldest column
+                }
+
+                // 3. Prepare data for the Matrix Chart
+                const chartData = [];
+                const currentHistoryLength = dataHistory.length;
+                
+                // Iterate over history (X-axis) - i is the time index (0 is oldest, end is newest)
+                for (let i = 0; i < currentHistoryLength; i++) {
+                    const samples = dataHistory[i];
+                    
+                    // Iterate over samples (Y-axis) - j is the depth index
+                    for (let j = 0; j < samples.length; j++) {
+                        
+                        chartData.push({
+                            // X-Coordinate: Maps the history index 'i' directly to the X-axis.
+                            // i=0 (oldest) maps to X=0 (left). i=end (newest) maps to X=PLOT_WIDTH (right).
+                            x: i, 
+                            y: j,
+                            v: samples[j] 
+                        });
+                    }
+                }
+
+                // 4. Update the Chart
+                chart.data.datasets[0].data = chartData;
+                chart.update('none'); 
+                
+                // 5. Update status (since data was successfully parsed and used)
+                if (statusEl.textContent === 'Status: Connecting...') {
+                    statusEl.textContent = 'Status: Streaming Data';
+                }
+
+            } catch (e) {
+                // CRITICAL: Log any client-side error to the browser console.
+                console.error('Client-side data processing failed:', e);
+                statusEl.textContent = 'Status: Processing Error';
+            }
+        };
+    </script>
+</body>
+</html>
