@@ -22,6 +22,9 @@ const NOISE_FLOOR_RANGE = 100;
 const SAMPLE_RESOLUTION = 0.2178; // cm/sample
 const EMA_ALPHA = 0.1;
 let lastSmoothedDistance = null; 
+const dotenv = require('dotenv');
+dotenv.config();
+const DBPASS = process.env.DBPASS;
 
 // --- GLOBAL STATE ---
 let currentGpsData = { lat: null, lon: null, initialized: false };
@@ -43,7 +46,7 @@ const pool = new Pool({
   user: "pi",
   host: "localhost",
   database: "gps_tracker",
-  password: "ch1rlt4n", // change this
+  password: DBPASS, // change this
   port: 5432,
 });
 

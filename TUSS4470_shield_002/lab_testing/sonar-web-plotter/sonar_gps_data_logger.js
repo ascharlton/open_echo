@@ -14,18 +14,22 @@
 const { Client } = require('pg');
 const { spawn } = require('child_process');
 const { SerialPort } = require('serialport'); 
+const dotenv = require('dotenv');
+dotenv.config();
+const DBPASS = process.env.DBPASS;
 
 // --- GLOBAL STATE ---
 let lastSmoothedDistance = null; 
 let comBuffer = Buffer.alloc(0); // Global running buffer for fragmented serial packets
 
 // --- 1. CONFIGURATION & CONSTANTS ---
-// NOTE: Replace these with your actual PostgreSQL credentials
+// NOTE: Replace these with your actual PostgreSQL credentialsi
+
 const PG_CONFIG = {
     user: 'pi',
     host: 'localhost',
     database: 'sonar',
-    password: 'ch1rlt4n',
+    password: DBPASS,
     port: 5432, 
 };
 

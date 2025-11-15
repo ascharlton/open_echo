@@ -15,6 +15,9 @@ const { Client } = require('pg');
 const { spawn } = require('child_process');
 // NOTE: You must install 'serialport' and import it here when running locally:
 const { SerialPort } = require('serialport'); 
+const dotenv = require('dotenv');
+dotenv.config();
+const DBPASS = process.env.DBPASS;
 
 // --- GLOBAL STATE ---
 let lastSmoothedDistance = null; 
@@ -27,7 +30,7 @@ const PG_CONFIG = {
     user: 'pi',
     host: 'localhost',
     database: 'sonar',
-    password: 'ch1rlt4n',
+    password: DBPASS,
     port: 5432, 
 };
 
